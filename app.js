@@ -237,7 +237,7 @@ async function makeOcrWorker() {
     try {
       const res = await fetch(dir + 'ocr-worker.js', { cache: 'force-cache' });
       if (!res.ok) continue;
-      const base = new URL(dir, location.href).href;
+      const base = new URL(dir || './', location.href).href;
       Object.assign(opts, { workerPath: base + 'ocr-worker.js', corePath: base, langPath: base, workerBlobURL: false });
       langs = ['Hangul'];
       break;
