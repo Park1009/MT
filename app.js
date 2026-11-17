@@ -243,9 +243,16 @@ async function makeOcrWorker() {
       break;
     } catch (e) { /* 다음 위치 확인 */ }
   }
-  const make = Tesseract.createWorker(langs, 1, opts);
-  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('글자 인식 엔진이 90초 안에 준비되지 않았어요.')), 90000));
-  return Promise.race([make, timeout]);
+  const timeout = ms => new Promise((_, rej) => setTimeout(() => rej(new Error('글자 인식 엔진이 제때 준비되지 않았어요.')), ms));
+  try {
+    return await Promise.race([Tesseract.createWorker(langs, 1, opts), timeout(90000)]);
+  } catch (e) {
+    if (langs[0] !== 'Hangul') throw (e instanceof Error ? e : new Error(String(e)));
+    // 같이 올린 한글 모델을 못 쓰면 CDN의 기본 한국어+영어 모델로 다시 시도
+    console.warn('한글 모델 준비 실패, 기본 모델로 다시 시도:', e);
+    delete opts.workerPath; delete opts.corePath; delete opts.langPath; delete opts.workerBlobURL;
+    return Promise.race([Tesseract.createWorker(['kor', 'eng'], 1, opts), timeout(90000)]);
+  }
 }
 
 // ---------------- 영수증 부분 맞추기 (자르기 화면) ----------------
