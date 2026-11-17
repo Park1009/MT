@@ -237,6 +237,7 @@ async function makeOcrWorker() {
     try {
       const res = await fetch(dir + 'ocr-worker.js', { cache: 'force-cache' });
       if (!res.ok) continue;
+      // './' 를 기준으로 해야 주소 뒤에 ?나 #이 붙어 있어도(카톡 공유 링크 등) 폴더 주소가 맞게 나옴
       const base = new URL(dir || './', location.href).href;
       Object.assign(opts, { workerPath: base + 'ocr-worker.js', corePath: base, langPath: base, workerBlobURL: false });
       langs = ['Hangul'];
@@ -279,7 +280,8 @@ function askCrop(img, index, count) {
     // 처음 네모: 자동으로 찾은 영수증 영역. 사진 전체에 가까우면 귀퉁이를 잡기 쉽게 조금 안쪽으로
     const reset = () => {
       let b = detectReceiptBox(src) || { x: 0, y: 0, w: SW(), h: SH() };
-      if (b.w * b.h > SW() * SH() * 0.85) b = { x: SW() * 0.06, y: SH() * 0.06, w: SW() * 0.88, h: SH() * 0.88 };
+      // (너무 안쪽으로 넣으면 영수증이 꽉 찬 사진에서 가장자리 금액이 잘림. '읽기' 때 4% 넓히므로 2%만 넣음)
+      if (b.w * b.h > SW() * SH() * 0.85) b = { x: SW() * 0.02, y: SH() * 0.02, w: SW() * 0.96, h: SH() * 0.96 };
       q = rectQuad(b); fit(); paint();
     };
     const path = () => { ctx.beginPath(); q.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k))); ctx.closePath(); };
@@ -1166,7 +1168,19 @@ function bootApp() {
     state.people.forEach(p => { pulse[p.id] = millis(); });
     afterChange();
   };
-  document.getElementById('saveCard').onclick = () => { if (cardG) saveCanvas(cardG, '먹은만큼정산', 'png'); };
+  // 파일 이름이 'meogeun-jeongsan_날짜.png'로 확실히 붙도록 직접 내려받기 링크를 만듦 (한글 파일 이름은 일부 브라우저에서 'download'로 바뀜)
+  document.getElementById('saveCard').onclick = () => {
+    if (!cardG) return;
+    const d = new Date(), pad = n => String(n).padStart(2, '0');
+    const name = `meogeun-jeongsan_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.png`;
+    cardG.elt.toBlob(blob => {
+      if (!blob) { saveCanvas(cardG, '먹은만큼정산', 'png'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }, 'image/png');
+  };
   document.getElementById('copyText').onclick = () => {
     const ta = document.getElementById('kakaoText');
     const toast = document.getElementById('toast');
