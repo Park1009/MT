@@ -118,7 +118,9 @@ function parseReceipt(raw) {
     const tail = [];
     while (tokens.length && isNum(tokens[tokens.length - 1])) tail.unshift(tokens.pop());
     // 8자리 넘는 숫자는 상품 바코드라 금액 계산에서 뺌
-    for (let i = tail.length - 1; i >= 0; i--) if (/^\d{8,}$/.test(tail[i])) tail.splice(i, 1);
+    // 쉼표 있는 금액이 같이 있으면 7자리 이상 쉼표 없는 숫자도 상품 코드로 봄
+    const hasComma = tail.some(t => /\d,\d{3}/.test(t));
+    for (let i = tail.length - 1; i >= 0; i--) if (/^\d{8,}$/.test(tail[i]) || (hasComma && /^\d{7,}$/.test(tail[i]))) tail.splice(i, 1);
     let name = cleanName(tokens.join(' '));
     if (!tail.length) {
       // 숫자가 없는 줄: 바로 앞 줄에 이름 없는 가격만 있었으면 그 이름으로 씀
@@ -147,7 +149,7 @@ function parseReceipt(raw) {
       const hit = smalls.find(q => units.some(u => u * q === amount));
       qty = hit || smalls[smalls.length - 1];
     }
-    if (units.length) unit = units[0];
+    if (units.length) unit = units.find(u => u * qty === amount) || units[0];
     // 금액이 깨져서 자릿수가 빠진 경우(2.00 → 200): 단가 × 수량으로 바로잡음
     if (unit && unit * qty !== amount) {
       const exp = unit * qty;
