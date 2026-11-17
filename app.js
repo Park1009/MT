@@ -231,15 +231,18 @@ async function makeOcrWorker() {
     }
   };
   // 페이지 옆 ocr/ 폴더에는 한글 전용 정밀 모델(Hangul)이 있음. 없으면 CDN의 기본 한국어+영어 모델을 씀
+  // 파일을 ocr/ 폴더에 넣었든, 저장소 맨 위에 그냥 올렸든 둘 다 찾음
   let langs = ['kor', 'eng'];
-  try {
-    const res = await fetch('ocr/ocr-worker.js', { cache: 'force-cache' });
-    if (res.ok) {
-      const base = new URL('ocr/', location.href).href;
+  for (const dir of ['ocr/', '']) {
+    try {
+      const res = await fetch(dir + 'ocr-worker.js', { cache: 'force-cache' });
+      if (!res.ok) continue;
+      const base = new URL(dir, location.href).href;
       Object.assign(opts, { workerPath: base + 'ocr-worker.js', corePath: base, langPath: base, workerBlobURL: false });
       langs = ['Hangul'];
-    }
-  } catch (e) { /* CDN 사용 */ }
+      break;
+    } catch (e) { /* 다음 위치 확인 */ }
+  }
   const make = Tesseract.createWorker(langs, 1, opts);
   const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('글자 인식 엔진이 90초 안에 준비되지 않았어요.')), 90000));
   return Promise.race([make, timeout]);
@@ -489,7 +492,7 @@ function itemRow(r, it) {
   price.type = 'text'; price.inputMode = 'numeric'; price.className = 'price';
   price.value = it.price ? Number(it.price).toLocaleString('ko-KR') : '';
   price.placeholder = '0'; price.setAttribute('aria-label', '가격');
-  price.oninput = () => { it.price = parseInt(price.value.replace(/[^\d]/g, ''), 10) || 0; renderSum(); persist(); };
+  price.oninput = () => { it.price = (/^\s*-/.test(price.value) ? -1 : 1) * (parseInt(price.value.replace(/[^\d]/g, ''), 10) || 0); renderSum(); persist(); };  // 할인 줄은 '-780'처럼 음수
   price.onblur = () => { price.value = it.price ? it.price.toLocaleString('ko-KR') : ''; };
   const drink = document.createElement('button');
   drink.type = 'button'; drink.className = 'toggle'; drink.textContent = '술·음료';

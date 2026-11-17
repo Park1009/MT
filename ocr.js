@@ -45,6 +45,18 @@ function longestRun(arr, min) {
   return be >= bs ? [bs, be] : null;
 }
 
+// [AI 생성] 짧은 끊김은 이어 붙여서 가장 긴 구간 찾기
+// 바코드·굵은 글씨 줄처럼 잠깐 어두운 줄 때문에 영수증이 두 동강 나지 않게 함
+function longestRunGap(arr, min, maxGap) {
+  let bs = 0, be = -1, s = -1, last = -1;
+  for (let i = 0; i <= arr.length; i++) {
+    const on = i < arr.length && arr[i] > min;
+    if (on) { if (s < 0 || i - last - 1 > maxGap) { if (s >= 0 && last - s > be - bs) { bs = s; be = last; } s = i; } last = i; }
+  }
+  if (s >= 0 && last - s > be - bs) { bs = s; be = last; }
+  return be >= bs ? [bs, be] : null;
+}
+
 // [AI 생성] 사진에서 영수증(밝은 종이) 부분의 네모 영역 찾기. 못 찾으면 사진 전체
 function detectReceiptBox(src) {
   const { w, h, g, scale } = grayOf(src, 500);
@@ -61,7 +73,7 @@ function detectReceiptBox(src) {
   const rowIn = new Float32Array(h);
   const cw = cr[1] - cr[0] + 1;
   for (let y = 0; y < h; y++) { let n = 0; for (let x = cr[0]; x <= cr[1]; x++) n += bright[y * w + x]; rowIn[y] = n / cw; }
-  const rr = longestRun(rowIn, 0.45);
+  const rr = longestRunGap(rowIn, 0.4, Math.round(h * 0.08));
   if (!rr) return null;
   const padX = Math.round(cw * 0.03), padY = Math.round((rr[1] - rr[0]) * 0.02);
   const box = {
@@ -312,7 +324,7 @@ async function recognizeBest(worker, canvas, onStep) {
     if (!best || score > best.score) best = { parsed, score, text: out.data.text, psm: tries[i].psm + '#' + i };
     const sum = parsed.items.reduce((s, x) => s + x.price, 0);
     const clean = parsed.items.every(x => /[가-힣]{2,}|[A-Za-z]{3,}/.test(x.name));
-    if (parsed.total && sum === parsed.total && parsed.items.length >= 2 && clean) break;
+    if (parsed.total && sum === parsed.total && parsed.items.length >= 1 && clean) break;
   }
   return best;
 }
