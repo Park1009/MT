@@ -105,12 +105,41 @@ function togglePerson(item, pid) {
 
 // [AI 생성] '모두 같이' 또는 '술 마신 사람끼리' 칸에 놓았을 때
 function setGroup(item, mode) {
+  if (mode === 'drinkers' && item.mode !== 'drinkers' && !state.people.some(p => p.drink)) { needDrinkerNote(); return false; }
   item.mode = item.mode === mode ? 'none' : mode;
   item.people = [];
   const ids = shareOf(item);
   ids.forEach(id => { pulse[id] = millis(); });
   afterChange();
+  return true;
 }
+
+// [AI 생성] 메뉴를 고르지 않고 칸만 눌렀을 때: 지금 영수증의 안 나눈 메뉴를 한꺼번에 배정
+// '모두 같이' → 안 나눈 메뉴 전부, '술 마신 사람끼리' → 안 나눈 술·음료 메뉴
+function groupRest(mode) {
+  const r = curReceipt();
+  if (!r) return;
+  if (mode === 'drinkers' && !state.people.some(p => p.drink)) { needDrinkerNote(); return; }
+  const rest = r.items.filter(it => !shareOf(it).length && (mode === 'all' || it.drink));
+  if (!rest.length) {
+    flashHint(mode === 'all' ? '이 영수증에는 아직 안 나눈 메뉴가 없어요.'
+      : '아직 안 나눈 술·음료 메뉴가 없어요. 다른 메뉴는 이 칸으로 끌어다 놓으면 술 마신 사람끼리 나눠요.');
+    return;
+  }
+  rest.forEach(it => { it.mode = mode; it.people = []; });
+  shareOf(rest[0]).forEach(id => { pulse[id] = millis(); });
+  flashHint(`${rest.length}개 메뉴를 ${mode === 'all' ? '모두 같이' : '술 마신 사람끼리'} 나눴어요.`, true);
+  afterChange();
+}
+
+// [AI 생성] 3단계 안내 줄에 잠깐 알림 띄우기
+let hintNote = null;
+function flashHint(msg, ok) {
+  hintNote = { msg, ok: !!ok, until: Date.now() + 4000 };
+  renderStep3Info();
+  setTimeout(() => { if (hintNote && Date.now() >= hintNote.until) { hintNote = null; if (state.step === 3) renderStep3Info(); } }, 4100);
+}
+function needDrinkerNote() { flashHint("먼저 위쪽 사람 이름 옆의 '술 마심'을 눌러 술 마신 사람을 표시해 주세요."); }
 
 function clearItem(item) { item.mode = 'none'; item.people = []; afterChange(); }
 
@@ -569,8 +598,10 @@ function renderStep3Info() {
   } else { left.textContent = ''; btn.hidden = true; }
   const hint = document.getElementById('hint3');
   const sel = selectedItem();
-  if (sel) hint.innerHTML = `<b>${escapeHtml(sel.name || '이름 없는 메뉴')}</b> 선택됨 · 얼굴이나 아래 칸을 누르면 배정돼요. 다시 누르면 선택이 풀려요.`;
-  else hint.innerHTML = '메뉴를 <b>사람 얼굴</b>로 끌어다 놓으세요. 같은 메뉴를 여러 명에게 놓으면 똑같이 나눠요. 영수증 쪽으로 다시 끌어오면 배정이 풀려요. 휴대폰에서는 메뉴를 누른 뒤 얼굴을 누르면 돼요.';
+  hint.classList.toggle('warn', !!(hintNote && !hintNote.ok));
+  if (hintNote && Date.now() < hintNote.until) hint.textContent = hintNote.msg;
+  else if (sel) hint.innerHTML = `<b>${escapeHtml(sel.name || '이름 없는 메뉴')}</b> 선택됨 · 얼굴이나 아래 칸을 누르면 배정돼요. 다시 누르면 선택이 풀려요.`;
+  else hint.innerHTML = '메뉴를 <b>사람 얼굴</b>이나 아래 <b>칸</b>으로 끌어다 놓으세요. 칸을 그냥 누르면 안 나눈 메뉴를 한꺼번에 나눠요. 같은 메뉴를 여러 명에게 놓으면 똑같이 나눠요. 영수증 쪽으로 다시 끌어오면 배정이 풀려요. 휴대폰에서는 메뉴를 누른 뒤 얼굴을 누르면 돼요.';
   document.getElementById('toStep4').disabled = !canGo(4);
 }
 
@@ -909,7 +940,8 @@ function drawZones() {
   LAY.zones.forEach(z => {
     const hot = hoverTarget && hoverTarget.zone === z.mode;
     const label = z.mode === 'all' ? '모두 같이 나누기' : '술 마신 사람끼리';
-    const sub = z.mode === 'all' ? `${state.people.length}명이 똑같이` : (drinkers ? `${drinkers}명이 똑같이` : '술 마신 사람 없음');
+    const sub = z.mode === 'all' ? `${state.people.length}명이 똑같이 · 누르면 남은 메뉴 전부`
+      : (drinkers ? `${drinkers}명이 똑같이 · 누르면 남은 술·음료` : "먼저 '술 마심'을 표시하세요");
     stroke(hot ? COL.accent : COL.line); strokeWeight(hot ? 2.5 : 1.5);
     drawingContext.setLineDash(hot ? [] : [6, 5]);
     fill(hot ? COL['accent-soft'] : COL.surface);
@@ -1048,7 +1080,8 @@ function pressAt(x, y) {
   const pid = avatarAt(x, y);
   if (pid && sel) { togglePerson(sel, pid); return true; }
   const z = zoneAt(x, y);
-  if (z && sel) { setGroup(sel, z); return true; }
+  if (z && sel) { if (setGroup(sel, z)) { selectedId = null; renderStep3Info(); } return true; }
+  if (z) { groupRest(z); return true; }
   return false;
 }
 
@@ -1086,7 +1119,11 @@ function onCanvas(e) { return e && cnv && e.target === cnv.elt; }
 
 function mousePressed(e) { if (state && state.step === 3 && onCanvas(e)) pressAt(mouseX, mouseY); }
 function mouseDragged() { if (state && state.step === 3) moveAt(mouseX, mouseY); }
-function mouseMoved() { if (state && state.step === 3) moveAt(mouseX, mouseY); }
+function mouseMoved() {
+  if (!(state && state.step === 3)) return;
+  moveAt(mouseX, mouseY);
+  if (cnv) cnv.elt.style.cursor = (zoneAt(mouseX, mouseY) || rowAt(mouseX, mouseY) || tabAt(mouseX, mouseY) || (selectedItem() && avatarAt(mouseX, mouseY))) ? 'pointer' : 'default';
+}
 function mouseReleased() { if (state && state.step === 3) releaseAt(mouseX, mouseY); }
 function touchStarted(e) {
   if (!(state && state.step === 3 && onCanvas(e))) return;
