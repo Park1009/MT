@@ -660,10 +660,12 @@ function renderStep3Info() {
     btn.hidden = false;
   } else { left.textContent = ''; btn.hidden = true; }
   const ca = document.getElementById('clearAll'), cr = curReceipt();
-  if (clearUndo && Date.now() < clearUndo.until) { ca.hidden = false; ca.textContent = '방금 푼 배정 되돌리기'; }
+  // 단추는 늘 보이게 두고, 풀 배정이 없을 때만 흐리게(누를 수 없게)
+  ca.hidden = !cr;
+  if (clearUndo && Date.now() < clearUndo.until) { ca.disabled = false; ca.textContent = '방금 푼 배정 되돌리기'; }
   else {
     clearUndo = null;
-    ca.hidden = !(cr && cr.items.some(it => it.mode !== 'none'));
+    ca.disabled = !(cr && cr.items.some(it => it.mode !== 'none'));
     ca.textContent = state.receipts.length > 1 ? `${cr ? cr.name : ''} 배정 모두 풀기` : '배정 모두 풀기';
   }
   const hint = document.getElementById('hint3');
