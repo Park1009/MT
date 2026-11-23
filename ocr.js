@@ -35,6 +35,20 @@ function otsu(g) {
   return th;
 }
 
+// [AI 생성] 최댓값 거르개: 각 칸을 주변 r칸 안의 가장 밝은 값으로 (가로·세로 따로)
+function maxFilter(g, w, h, r) {
+  const t = new Float32Array(w * h), out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let m = 0; for (let d = -r; d <= r; d++) { const xx = x + d; if (xx >= 0 && xx < w && g[y * w + xx] > m) m = g[y * w + xx]; }
+    t[y * w + x] = m;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let m = 0; for (let d = -r; d <= r; d++) { const yy = y + d; if (yy >= 0 && yy < h && t[yy * w + x] > m) m = t[yy * w + x]; }
+    out[y * w + x] = m;
+  }
+  return out;
+}
+
 // [AI 생성] 가장 긴 연속 구간 찾기 (값이 기준보다 큰 칸들)
 function longestRun(arr, min) {
   let bs = 0, be = -1, s = -1;
@@ -68,7 +82,7 @@ function detectReceiptBox(src) {
   for (let y = 0; y < h; y++) { let n = 0; for (let x = 0; x < w; x++) n += bright[y * w + x]; rowFrac[y] = n / w; }
   const colFrac = new Float32Array(w);
   for (let x = 0; x < w; x++) { let n = 0; for (let y = 0; y < h; y++) n += bright[y * w + x]; colFrac[x] = n / h; }
-  const cr = longestRun(colFrac, 0.3);
+  const cr = longestRunGap(colFrac, 0.3, Math.round(w * 0.04));
   if (!cr) return null;
   const rowIn = new Float32Array(h);
   const cw = cr[1] - cr[0] + 1;
@@ -224,8 +238,9 @@ function prepareReceipt(src, box, opts) {
   const g = new Float32Array(cw * ch);
   for (let i = 0, j = 0; i < a.length; i += 4, j++) g[j] = a[i] * 0.299 + a[i + 1] * 0.587 + a[i + 2] * 0.114;
 
-  // 그림자 지우기: 크게 흐린 배경 밝기로 나눠서 종이 밝기를 고르게
-  const k = 8, sw = Math.ceil(cw / k), sh = Math.ceil(ch / k);
+  // 그림자 지우기: 종이 밝기(배경)를 구해서 나눠 주면 종이 밝기가 고르게 됨
+  // 구겨진 종이는 접힌 자국마다 그림자 경계가 날카로워서, 배경을 작은 칸으로 촘촘하게 구함
+  const k = 4, sw = Math.ceil(cw / k), sh = Math.ceil(ch / k);
   const small = new Float32Array(sw * sh);
   for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
     // 글자(어두운 점)를 피하려고 칸 안에서 밝은 쪽 값을 씀
@@ -233,11 +248,15 @@ function prepareReceipt(src, box, opts) {
     for (let dy = 0; dy < k; dy++) { const yy = y * k + dy; if (yy >= ch) break; for (let dx = 0; dx < k; dx++) { const xx = x * k + dx; if (xx >= cw) break; const v = g[yy * cw + xx]; if (v > mx) mx = v; } }
     small[y * sw + x] = mx;
   }
-  const bg = boxBlur(small, sw, sh, 4);
+  // 주변 칸까지 밝은 값을 넓혀서(굵은 글자 획도 배경으로 안 잡히게) 살짝만 흐림
+  const bg = boxBlur(maxFilter(small, sw, sh, 2), sw, sh, 1);
   for (let y = 0; y < ch; y++) {
-    const sy = Math.min(sh - 1, (y / k) | 0);
+    // 칸 사이를 부드럽게 이어서(쌍선형 보간) 칸 경계 자국이 안 생기게
+    const fy = Math.min(sh - 1, Math.max(0, (y + 0.5) / k - 0.5)), y0 = fy | 0, y1 = Math.min(sh - 1, y0 + 1), ty = fy - y0;
     for (let x = 0; x < cw; x++) {
-      const b = Math.max(30, bg[sy * sw + Math.min(sw - 1, (x / k) | 0)]);
+      const fx = Math.min(sw - 1, Math.max(0, (x + 0.5) / k - 0.5)), x0 = fx | 0, x1 = Math.min(sw - 1, x0 + 1), tx = fx - x0;
+      const b0 = bg[y0 * sw + x0] * (1 - tx) + bg[y0 * sw + x1] * tx, b1 = bg[y1 * sw + x0] * (1 - tx) + bg[y1 * sw + x1] * tx;
+      const b = Math.max(30, b0 * (1 - ty) + b1 * ty);
       g[y * cw + x] = Math.min(255, (g[y * cw + x] / b) * 245);
     }
   }
@@ -246,7 +265,10 @@ function prepareReceipt(src, box, opts) {
   for (let i = 0; i < g.length; i++) hist[g[i] | 0]++;
   let lo = 0, acc = 0;
   for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > g.length * 0.01) { lo = v; break; } }
-  const hi = 235, span = Math.max(1, hi - lo);
+  // 밝은 쪽 기준: 글자와 종이를 가르는 값(오츠)보다 조금 밝은 곳부터는 하얗게.
+  // 접힌 자국에 남은 옅은 회색 줄은 지워지고, 진한 글자는 그대로 남음
+  const th = otsu(g);
+  const hi = Math.max(150, Math.min(235, th + (255 - th) * 0.35)), span = Math.max(1, hi - lo);
   for (let i = 0, j = 0; j < g.length; i += 4, j++) {
     const v = Math.max(0, Math.min(255, ((g[j] - lo) * 255) / span));
     g[j] = v;
@@ -305,6 +327,104 @@ function scaleCanvas(c, W) {
   return o;
 }
 
+// [AI 생성] 접힌 자국에 남은 회색 줄 지우기
+// 글자는 가운데가 진하고(검정) 가장자리만 회색인데, 접힌 자국은 진한 곳 없이 회색만 이어짐.
+// 그래서 진한 점 근처가 아닌 회색 점은 하얗게 지움
+function dropFaintLines(src) {
+  const W = src.width, H = src.height;
+  const d = src.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H);
+  const a = d.data, n = W * H;
+  const core = new Uint8Array(n);
+  for (let i = 0, j = 0; j < n; i += 4, j++) core[j] = a[i] < 80 ? 1 : 0;
+  // 진한 점을 가로·세로로 3칸씩 넓힌 범위
+  const r = 3, t = new Uint8Array(n), near = new Uint8Array(n);
+  for (let y = 0; y < H; y++) { let last = -99; for (let x = 0; x < W; x++) { if (core[y * W + x]) last = x; if (x - last <= r) t[y * W + x] = 1; } last = 99999; for (let x = W - 1; x >= 0; x--) { if (core[y * W + x]) last = x; if (last - x <= r) t[y * W + x] = 1; } }
+  for (let x = 0; x < W; x++) { let last = -99; for (let y = 0; y < H; y++) { if (t[y * W + x]) last = y; if (y - last <= r) near[y * W + x] = 1; } last = 99999; for (let y = H - 1; y >= 0; y--) { if (t[y * W + x]) last = y; if (last - y <= r) near[y * W + x] = 1; } }
+  for (let i = 0, j = 0; j < n; i += 4, j++) if (!near[j] && a[i] < 255) a[i] = a[i + 1] = a[i + 2] = 255;
+  const out = document.createElement('canvas'); out.width = W; out.height = H;
+  out.getContext('2d').putImageData(d, 0, 0);
+  return out;
+}
+
+// [AI 생성] 구겨진 종이 때문에 물결치는 글자 줄을 반듯하게 펴기
+// 사진을 세로 띠 여러 개로 나누고, 띠마다 글자 줄의 높이가 옆 띠보다 얼마나 위·아래로 어긋났는지 찾아서
+// 그만큼 띠를 위·아래로 밀어 줄을 맞춤. 위쪽·아래쪽 부분마다 따로 구해서 사진 안에서 휘는 정도가 달라도 맞춤.
+// 펼 것이 거의 없으면 null
+function dewarpLines(src) {
+  const W = src.width, H = src.height;
+  const d = src.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+  const ink = new Uint8Array(W * H);
+  for (let i = 0, j = 0; j < ink.length; i += 4, j++) ink[j] = d[i] < 128 ? 1 : 0;
+  const S = 16, sw = W / S;                          // 세로 띠 개수
+  const bandH = Math.round(W * 0.3), step = Math.round(bandH / 2);   // 가로 구간 (반씩 겹침)
+  const M = Math.round(W * 0.022);                   // 띠 하나가 어긋날 수 있는 최대 높이
+  const centers = [], field = [];
+  for (let y0 = 0; y0 < H; y0 += step) {
+    const ya = Math.max(0, y0 - M), yb = Math.min(H, y0 + bandH + M), n = yb - ya;
+    const prof = [], mass = [];
+    for (let s = 0; s < S; s++) {
+      const pr = new Float32Array(n), xa = Math.round(s * sw), xb = Math.round((s + 1) * sw);
+      let m = 0;
+      for (let y = ya; y < yb; y++) { let c = 0; for (let x = xa; x < xb; x++) c += ink[y * W + x]; pr[y - ya] = c; m += c; }
+      prof.push(pr); mass.push(m);
+    }
+    const minMass = sw * bandH * 0.004;
+    const shift = new Float32Array(S);
+    const ok = mass.map(m => m > minMass);
+    // 가운데에서 가장 글자가 많은 띠를 기준(0)으로, 양옆으로 하나씩 이어 가며 어긋난 정도를 구함
+    let ref = -1, best = 0;
+    for (let s = Math.floor(S * 0.25); s < Math.ceil(S * 0.75); s++) if (ok[s] && mass[s] > best) { best = mass[s]; ref = s; }
+    if (ref < 0) for (let s = 0; s < S; s++) if (ok[s] && mass[s] > best) { best = mass[s]; ref = s; }
+    if (ref < 0) { centers.push(y0 + bandH / 2); field.push(shift); continue; }
+    const R = Math.round(M / 2);
+    const match = (a, b) => {                     // b 띠가 a 띠보다 몇 칸 아래로 어긋났는지 (줄 모양이 가장 잘 겹치는 값)
+      let bd = 0, bv = -1;
+      for (let dd = -R; dd <= R; dd++) {
+        let v = 0;
+        for (let y = M; y < n - M; y++) v += prof[a][y] * prof[b][y + dd];
+        if (v > bv) { bv = v; bd = dd; }
+      }
+      return bd;
+    };
+    for (const dir of [1, -1]) {
+      let last = ref;
+      for (let s = ref + dir; s >= 0 && s < S; s += dir) {
+        if (!ok[s]) { shift[s] = shift[last]; continue; }
+        shift[s] = Math.max(-M, Math.min(M, shift[last] + match(last, s)));
+        last = s;
+      }
+    }
+    // 띠 사이 부드럽게
+    const sm = new Float32Array(S);
+    for (let s = 0; s < S; s++) sm[s] = (shift[Math.max(0, s - 1)] + 2 * shift[s] + shift[Math.min(S - 1, s + 1)]) / 4;
+    centers.push(y0 + bandH / 2); field.push(sm);
+    if (y0 + bandH >= H) break;
+  }
+  let lo = Infinity, hi = -Infinity;
+  field.forEach(f => f.forEach(v => { lo = Math.min(lo, v); hi = Math.max(hi, v); }));
+  if (!(hi - lo >= 3)) return null;
+  // 픽셀마다 어긋남을 띠·구간 사이로 부드럽게 이어서 옮김
+  const out = document.createElement('canvas'); out.width = W; out.height = H;
+  const octx = out.getContext('2d'); const od = octx.createImageData(W, H), o = od.data;
+  const sxc = s => (s + 0.5) * sw;
+  for (let y = 0; y < H; y++) {
+    let bi = 0; while (bi < centers.length - 1 && centers[bi + 1] < y) bi++;
+    const b0 = bi, b1 = Math.min(centers.length - 1, bi + 1);
+    const ty = b1 === b0 ? 0 : Math.min(1, Math.max(0, (y - centers[b0]) / (centers[b1] - centers[b0])));
+    for (let x = 0; x < W; x++) {
+      const fs = Math.min(S - 1, Math.max(0, x / sw - 0.5)), s0 = fs | 0, s1 = Math.min(S - 1, s0 + 1), tx = fs - s0;
+      const v0 = field[b0][s0] * (1 - tx) + field[b0][s1] * tx, v1 = field[b1][s0] * (1 - tx) + field[b1][s1] * tx;
+      const sy = y + v0 * (1 - ty) + v1 * ty;
+      const yA = Math.floor(sy), f = sy - yA;
+      const a = yA >= 0 && yA < H ? d[(yA * W + x) * 4] : 255, b = yA + 1 >= 0 && yA + 1 < H ? d[((yA + 1) * W + x) * 4] : 255;
+      const v = a * (1 - f) + b * f, k = (y * W + x) * 4;
+      o[k] = o[k + 1] = o[k + 2] = v; o[k + 3] = 255;
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
+
 // [AI 생성] 여러 방식으로 읽어 보고 가장 그럴듯한 결과 고르기
 // 1) 기본 크기·줄 단위(PSM 6) → 2) 크게 키워서 다시 → 3) 단 나눔 방식(PSM 4)
 // 메뉴 합계가 영수증 합계와 맞고 이름도 멀쩡하면 거기서 멈춤
@@ -312,13 +432,17 @@ async function recognizeBest(worker, canvas, onStep) {
   const tries = [
     { make: () => canvas, psm: '6' },
     { make: () => scaleCanvas(canvas, 2200), psm: '6' },
-    { make: () => canvas, psm: '4' }
+    { make: () => canvas, psm: '4' },
+    // 앞에서 확신이 없을 때만: 접힌 자국을 지우고 물결치는 줄을 펴서 다시 (구겨진 종이)
+    { make: () => { const c = dropFaintLines(canvas); return dewarpLines(c) || c; }, psm: '6' }
   ];
   let best = null;
   for (let i = 0; i < tries.length; i++) {
     if (onStep) onStep(i, tries.length);
+    const img = tries[i].make();
+    if (!img) continue;                               // 펼 것이 없으면 건너뜀
     await worker.setParameters({ tessedit_pageseg_mode: tries[i].psm, preserve_interword_spaces: '1', user_defined_dpi: '300' });
-    const out = await worker.recognize(tries[i].make());
+    const out = await worker.recognize(img);
     const parsed = parseReceipt(out.data.text);
     const score = parseScore(parsed);
     if (!best || score > best.score) best = { parsed, score, text: out.data.text, psm: tries[i].psm + '#' + i };

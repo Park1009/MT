@@ -45,6 +45,8 @@ const cleanName = s => {
   // 맨 앞의 한 글자 조각(옆 칸 글자가 섞여 들어온 것) 지우기
   if (t.length > 1 && t[0].length === 1 && t.slice(1).join('').length >= 2) t = t.slice(1);
   // 맨 뒤의 영문 한 글자 잡티('꼬마김밥A j') 지우기
+  // 한글 메뉴 이름 뒤에 붙은 영문 한두 글자('하이볼 WA')는 접힌 자국·잡티가 글자로 읽힌 것
+  while (t.length > 1 && /^[A-Za-z]{1,2}$/.test(t[t.length - 1]) && /[가-힣]{2,}/.test(t.slice(0, -1).join(''))) t = t.slice(0, -1);
   if (t.length > 1 && /^[A-Za-z]$/.test(t[t.length - 1])) t = t.slice(0, -1);
   return t.join(' ').replace(/[.\s-]+$/, '').trim();
 };
@@ -52,7 +54,7 @@ const cleanName = s => {
 
 function parseReceipt(raw) {
   const items = [];
-  let total = null, payTotal = null, pendingName = null, orphan = null, seenTotal = false, subTotal = null;
+  let total = null, payTotal = null, pendingName = null, orphan = null, seenTotal = false, subTotal = null, bare = null;
   const discounts = new Set();
 
   const lines = String(raw)
@@ -160,7 +162,7 @@ function parseReceipt(raw) {
       pendingName = /[가-힣]{2,}/.test(name) ? name : prevName;
       continue;
     }
-    if (!/[가-힣A-Za-z]/.test(name)) { if (!seenTotal) orphan = { amount, qty }; continue; }
+    if (!/[가-힣A-Za-z]/.test(name)) { if (!seenTotal) orphan = { amount, qty }; bare = { amount, at: items.length }; continue; }
     // 합계 줄을 지난 뒤의 금액 줄은 결제·포인트 정보라 메뉴로 넣지 않음
     if (seenTotal && items.length) continue;
     if (name.length > 24) name = name.slice(0, 24);
@@ -169,6 +171,9 @@ function parseReceipt(raw) {
     name = fixMenuName(name);
     items.push({ name: qty > 1 ? `${name} ×${qty}` : name, price: amount, drink: DRINK.test(name) });
   }
+  // '합계' 글자를 못 읽고 금액만 남은 줄이 앞 메뉴들의 합과 같으면 그게 합계
+  if (total == null && payTotal == null && subTotal == null && bare && bare.at >= 2 &&
+      items.slice(0, bare.at).reduce((a, x) => a + x.price, 0) === bare.amount) total = bare.amount;
   let finalTotal = payTotal != null ? payTotal : (total != null ? total : subTotal);
   if (total == null) total = subTotal;
   // 합계 끝자리가 빠져 읽힌 경우(36,000 → 3600): 메뉴 누적합이 합계의 10배·100배면 누적합을 합계로

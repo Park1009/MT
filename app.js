@@ -132,6 +132,28 @@ function groupRest(mode) {
   afterChange();
 }
 
+// [AI 생성] 지금 영수증의 배정을 모두 풀기. 실수했을 때를 위해 6초 동안 되돌릴 수 있음
+let clearUndo = null;
+function clearAllOrUndo() {
+  if (clearUndo && Date.now() < clearUndo.until) {
+    const r = state.receipts.find(x => x.id === clearUndo.rid);
+    if (r) r.items.forEach(it => { const b = clearUndo.snap[it.id]; if (b) { it.mode = b.mode; it.people = b.people.slice(); } });
+    clearUndo = null;
+    flashHint('배정을 되돌렸어요.', true);
+    afterChange();
+    return;
+  }
+  const r = curReceipt();
+  if (!r) return;
+  const snap = {};
+  r.items.forEach(it => { snap[it.id] = { mode: it.mode, people: it.people.slice() }; it.mode = 'none'; it.people = []; });
+  selectedId = null;
+  clearUndo = { rid: r.id, snap, until: Date.now() + 6000 };
+  setTimeout(() => { if (clearUndo && Date.now() >= clearUndo.until) { clearUndo = null; if (state.step === 3) renderStep3Info(); } }, 6100);
+  flashHint(`${r.name}의 배정을 모두 풀었어요.`, true);
+  afterChange();
+}
+
 // [AI 생성] 3단계 안내 줄에 잠깐 알림 띄우기
 let hintNote = null;
 function flashHint(msg, ok) {
@@ -637,12 +659,19 @@ function renderStep3Info() {
     left.textContent = `아직 안 나눈 메뉴 ${t.unassignedCount}개 · ${won(t.unassigned)}`;
     btn.hidden = false;
   } else { left.textContent = ''; btn.hidden = true; }
+  const ca = document.getElementById('clearAll'), cr = curReceipt();
+  if (clearUndo && Date.now() < clearUndo.until) { ca.hidden = false; ca.textContent = '방금 푼 배정 되돌리기'; }
+  else {
+    clearUndo = null;
+    ca.hidden = !(cr && cr.items.some(it => it.mode !== 'none'));
+    ca.textContent = state.receipts.length > 1 ? `${cr ? cr.name : ''} 배정 모두 풀기` : '배정 모두 풀기';
+  }
   const hint = document.getElementById('hint3');
   const sel = selectedItem();
   hint.classList.toggle('warn', !!(hintNote && !hintNote.ok));
   if (hintNote && Date.now() < hintNote.until) hint.textContent = hintNote.msg;
   else if (sel) hint.innerHTML = `<b>${escapeHtml(sel.name || '이름 없는 메뉴')}</b> 선택됨 · 얼굴이나 아래 칸을 누르면 배정돼요. 다시 누르면 선택이 풀려요.`;
-  else hint.innerHTML = '메뉴를 <b>사람 얼굴</b>이나 아래 <b>칸</b>으로 끌어다 놓으세요. 칸을 그냥 누르면 안 나눈 메뉴를 한꺼번에 나눠요. 같은 메뉴를 여러 명에게 놓으면 똑같이 나눠요. 영수증 쪽으로 다시 끌어오면 배정이 풀려요. 휴대폰에서는 메뉴를 누른 뒤 얼굴을 누르면 돼요.';
+  else hint.innerHTML = '메뉴를 <b>사람 얼굴</b>이나 아래 <b>칸</b>으로 끌어다 놓으세요. 칸을 그냥 누르면 안 나눈 메뉴를 한꺼번에 나눠요. 메뉴 오른쪽 <b>×</b>를 누르면 그 메뉴 배정이 풀려요. 같은 메뉴를 여러 명에게 놓으면 똑같이 나눠요. 영수증 쪽으로 다시 끌어오면 배정이 풀려요. 휴대폰에서는 메뉴를 누른 뒤 얼굴을 누르면 돼요.';
   document.getElementById('toStep4').disabled = !canGo(4);
 }
 
@@ -929,26 +958,36 @@ function drawReceiptPaper() {
     textFont(FONT_NUM); textSize(14);
     const pw = textWidth(priceStr);
     textFont(FONT_BODY); textSize(15); fill(COL['paper-ink']); textAlign(LEFT, CENTER);
-    const nm = fitText(it.name || '이름 없는 메뉴', w - (nx - x) - pw - 30);
+    const nm = fitText(it.name || '이름 없는 메뉴', w - (nx - x) - pw - 54);
     text(nm, nx, ry + rec.rowH / 2);
     const nmw = textWidth(nm);
     stroke(COL['paper-line']); strokeWeight(1.2);
-    for (let dx = nx + nmw + 8; dx < x + w - 16 - pw - 8; dx += 6) point(dx, ry + rec.rowH / 2 + 5);
+    for (let dx = nx + nmw + 8; dx < x + w - PRICE_R - pw - 8; dx += 6) point(dx, ry + rec.rowH / 2 + 5);
     noStroke(); textFont(FONT_NUM); textSize(14); textAlign(RIGHT, CENTER); fill(COL['paper-ink']);
-    text(priceStr, x + w - 16, ry + rec.rowH / 2);
+    text(priceStr, x + w - PRICE_R, ry + rec.rowH / 2);
     pop();
+    if (it.mode !== 'none') drawClearButton(x + w - 20, ry + rec.rowH / 2, clearBtnAt(mouseX, mouseY) === it);
   });
   // 합계
   const fy = rec.rowsTop + r.items.length * rec.rowH + 8;
   dashed(window, x + 16, x + w - 16, fy);
   textFont(FONT_BODY); textSize(15); textStyle(BOLD); fill(COL['paper-ink']); textAlign(LEFT, BASELINE);
   text('합계', x + 16, fy + 28);
-  textFont(FONT_NUM); textAlign(RIGHT, BASELINE); text(won(receiptSum(r)), x + w - 16, fy + 28);
+  textFont(FONT_NUM); textAlign(RIGHT, BASELINE); text(won(receiptSum(r)), x + w - PRICE_R, fy + 28);
   textStyle(NORMAL);
   const left = r.items.filter(it => !shareOf(it).length);
   textFont(FONT_BODY); textSize(13); textAlign(LEFT, BASELINE);
   if (left.length) { fill('#b5420f'); text(`안 나눈 메뉴 ${left.length}개 · ${won(left.reduce((s, it) => s + (Number(it.price) || 0), 0))}`, x + 16, fy + 52); }
   else { fill('#0d7f62'); text('이 영수증은 다 나눴어요', x + 16, fy + 52); }
+}
+
+// [AI 생성] 메뉴 줄 오른쪽의 배정 풀기(×) 단추. 금액은 이 단추 자리만큼 왼쪽에 씀
+const PRICE_R = 40;
+function drawClearButton(cx, cy, hot) {
+  noStroke(); fill(hot ? '#b5420f' : 'rgba(38,36,31,0.12)'); circle(cx, cy, 20);
+  stroke(hot ? '#ffffff' : '#6b665b'); strokeWeight(1.8);
+  line(cx - 4, cy - 4, cx + 4, cy + 4); line(cx + 4, cy - 4, cx - 4, cy + 4);
+  noStroke();
 }
 
 // [AI 생성] 메뉴 줄 왼쪽의 배정 표시 (사람 색 점 / '모두' / '술' / 빈 동그라미)
@@ -1091,6 +1130,10 @@ function rowAt(x, y) {
   const i = Math.floor((y - rec.rowsTop) / rec.rowH);
   return i >= 0 && i < r.items.length ? r.items[i] : null;
 }
+function clearBtnAt(x, y) {
+  const rec = LAY && LAY.rec, it = rec ? rowAt(x, y) : null;
+  return it && it.mode !== 'none' && x >= rec.x + rec.w - 36 && x <= rec.x + rec.w - 4 ? it : null;
+}
 function avatarAt(x, y) {
   const a = LAY && LAY.avatars.find(a => x >= a.x && x <= a.x + a.w && y >= a.y && y <= a.y + a.h);
   return a ? a.id : null;
@@ -1115,6 +1158,13 @@ function hoverRow() { return LAY ? rowAt(mouseX, mouseY) : null; }
 function pressAt(x, y) {
   const tab = tabAt(x, y);
   if (tab != null) { state.current = tab; selectedId = null; renderStep3Info(); persist(); return true; }
+  const cb = clearBtnAt(x, y);
+  if (cb) {
+    if (selectedId === cb.id) selectedId = null;
+    clearItem(cb);
+    flashHint(`'${cb.name || '이름 없는 메뉴'}' 배정을 풀었어요.`, true);
+    return true;
+  }
   const it = rowAt(x, y);
   if (it) { dragging = { item: it, x0: x, y0: y, moved: false }; return true; }
   const sel = selectedItem();
@@ -1163,7 +1213,7 @@ function mouseDragged() { if (state && state.step === 3) moveAt(mouseX, mouseY);
 function mouseMoved() {
   if (!(state && state.step === 3)) return;
   moveAt(mouseX, mouseY);
-  if (cnv) cnv.elt.style.cursor = (zoneAt(mouseX, mouseY) || rowAt(mouseX, mouseY) || tabAt(mouseX, mouseY) || (selectedItem() && avatarAt(mouseX, mouseY))) ? 'pointer' : 'default';
+  if (cnv) cnv.elt.style.cursor = (clearBtnAt(mouseX, mouseY) || zoneAt(mouseX, mouseY) || rowAt(mouseX, mouseY) || tabAt(mouseX, mouseY) || (selectedItem() && avatarAt(mouseX, mouseY))) ? 'pointer' : 'default';
 }
 function mouseReleased() { if (state && state.step === 3) releaseAt(mouseX, mouseY); }
 function touchStarted(e) {
@@ -1215,6 +1265,7 @@ function bootApp() {
     persist();
     if (state.receipts.length) renderStep2(); else goStep(1);
   };
+  document.getElementById('clearAll').onclick = clearAllOrUndo;
   document.getElementById('splitRest').onclick = () => {
     state.receipts.forEach(r => r.items.forEach(it => { if (!shareOf(it).length) { it.mode = 'all'; it.people = []; } }));
     state.people.forEach(p => { pulse[p.id] = millis(); });
