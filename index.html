@@ -92,10 +92,6 @@ button.quiet { background: transparent; }
 .steps button[aria-current="step"] .n { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .steps button.done .n { border-color: var(--accent); color: var(--accent); }
 .steps button:disabled { opacity: 0.5; cursor: not-allowed; }
-.banner {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  background: var(--accent-soft); border-radius: 12px; padding: 10px 14px; font-size: 14px;
-}
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; display: grid; gap: 16px; min-width: 0; }
 .panel h2 { font-family: var(--font-display); font-weight: 400; font-size: 24px; margin: 0; text-wrap: balance; }
 .panel .lead { margin: -8px 0 0; color: var(--muted); max-width: 65ch; }
@@ -193,10 +189,6 @@ textarea {
     <button type="button" data-step="4"><span class="n">4</span><span class="t">결과 카드</span></button>
   </nav>
 
-  <div id="exampleBanner" class="banner" hidden>
-    <span>지금은 <b>예시 영수증</b>으로 보는 중이에요. 메뉴를 사람 얼굴로 끌어다 놓아 보세요.</span>
-    <button id="startOwn" class="primary" type="button">내 영수증으로 시작</button>
-  </div>
 
   <!-- 1단계: 사진 올리기 -->
   <section id="step1" class="panel" hidden>
@@ -244,7 +236,6 @@ textarea {
     </div>
     <div class="row">
       <button id="manualBtn" type="button">사진 없이 직접 입력</button>
-      <button id="sampleBtn" type="button">예시 영수증 다시 보기</button>
       <span class="spacer"></span>
       <button id="toStep2" class="primary" type="button">다음: 메뉴 확인</button>
     </div>

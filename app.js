@@ -45,32 +45,9 @@ function makePerson(name, drink) {
   return { id: newId('p'), name: name, drink: !!drink, c: c };
 }
 
-// [AI 생성] 예시 영수증 2장과 4명 (처음 열었을 때 보여주는 데이터)
-function exampleState() {
-  state = { receipts: [], people: [], current: 0, payer: null, step: 3, example: true };
-  const jh = makePerson('지훈', true); state.people.push(jh);
-  const ms = makePerson('민서', true); state.people.push(ms);
-  const sy = makePerson('서연', false); state.people.push(sy);
-  const dy = makePerson('도윤', true); state.people.push(dy);
-  const r1 = { id: newId('r'), name: '1차 고깃집', total: 70000, items: [
-    makeItem('삼겹살 ×2', 32000), makeItem('목살', 16000), makeItem('된장찌개', 8000),
-    makeItem('공기밥 ×2', 2000), makeItem('참이슬 ×2', 10000, true), makeItem('콜라', 2000, true)] };
-  r1.items[0].mode = 'all';
-  r1.items[1].mode = 'people'; r1.items[1].people = [jh.id, dy.id];
-  r1.items[4].mode = 'drinkers';
-  r1.items[5].mode = 'people'; r1.items[5].people = [sy.id];
-  const r2 = { id: newId('r'), name: '2차 호프', total: 41500, items: [
-    makeItem('생맥주 ×3', 13500, true), makeItem('후라이드 치킨', 21000), makeItem('감자튀김', 7000)] };
-  r2.items[0].mode = 'drinkers';
-  r2.items[1].mode = 'all';
-  state.receipts.push(r1, r2);
-  state.payer = ms.id;
-  return state;
-}
-
-// [AI 생성] 빈 정산 (내 영수증으로 시작할 때)
+// [AI 생성] 빈 정산 (처음 열었을 때, 새 정산 시작할 때)
 function blankState() {
-  state = { receipts: [], people: [], current: 0, payer: null, step: 1, example: false };
+  state = { receipts: [], people: [], current: 0, payer: null, step: 1 };
   state.people.push(makePerson('나', false));
   state.people.push(makePerson('친구1', false));
   return state;
@@ -139,7 +116,6 @@ function clearItem(item) { item.mode = 'none'; item.people = []; afterChange(); 
 
 // [AI 생성] 데이터가 바뀌면 저장하고 화면 글자들을 갱신
 function afterChange() {
-  if (state.example) { /* 예시를 만져도 예시 표시는 그대로 */ }
   persist();
   if (state.step === 3) { renderPeopleBar(false); renderStep3Info(); }
 }
@@ -167,7 +143,6 @@ function goStep(n) {
     b.classList.toggle('done', s < n);
     if (s === n) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current');
   });
-  document.getElementById('exampleBanner').hidden = !state.example;
   if (n === 1) renderStep1();
   if (n === 2) renderStep2();
   if (n === 3) { renderPeopleBar(true); renderStep3Info(); loop(); } else noLoop();
@@ -233,7 +208,8 @@ async function makeOcrWorker() {
   // 페이지 옆 ocr/ 폴더에는 한글 전용 정밀 모델(Hangul)이 있음. 없으면 CDN의 기본 한국어+영어 모델을 씀
   // 파일을 ocr/ 폴더에 넣었든, 저장소 맨 위에 그냥 올렸든 둘 다 찾음
   let langs = ['kor', 'eng'];
-  for (const dir of ['ocr/', '']) {
+  // 이 저장소는 맨 위에 올려 두었으므로 맨 위부터 찾음 (없는 쪽을 먼저 찾으면 콘솔에 404가 찍힘)
+  for (const dir of ['', 'ocr/']) {
     try {
       const res = await fetch(dir + 'ocr-worker.js', { cache: 'force-cache' });
       if (!res.ok) continue;
@@ -359,7 +335,6 @@ function addPastedReceipt() {
     return;
   }
   err.hidden = true;
-  if (state.example) blankState();
   const r = { id: newId('r'), name: (state.receipts.length + 1) + '차', total: parsed.total, items: parsed.items.map(x => makeItem(x.name, x.price, x.drink)) };
   state.receipts.push(r);
   state.current = state.receipts.length - 1;
@@ -398,7 +373,6 @@ async function handleReceiptFile(file, index, count) {
   getOcrWorker().catch(() => {});                 // 사진을 맞추는 동안 인식 엔진을 미리 준비
   const crop = await askCrop(img, index, count);
   if (!crop) return null;
-  if (state.example) blankState();
   const r = { id: newId('r'), name: (state.receipts.length + 1) + '차', total: null, items: [] };
   const flat = warpQuad(crop.src, crop.quad);     // 고른 네 귀퉁이 안을 반듯하게 펴기
   photos[r.id] = cropPreview(flat, { x: 0, y: 0, w: flat.width, h: flat.height });
@@ -1128,13 +1102,13 @@ function windowResized() { if (state && state.step === 3) computeLayout(); }
 
 // [AI 생성] 버튼 연결과 첫 화면
 function bootApp() {
-  state = restore() || exampleState();
+  // 저장된 정산이 있으면 불러오되(예전 예시 데이터는 버림), 화면은 항상 1단계 '사진 올리기'부터
+  state = restore();
+  if (!state || state.example) blankState();
+  state.step = 1;
   state.people.forEach(p => { if (p.c == null) p.c = 0; });
   document.querySelectorAll('.steps button').forEach(b => { b.onclick = () => goStep(Number(b.dataset.step)); });
-  document.getElementById('startOwn').onclick = () => { blankState(); selectedId = null; shownBars = {}; goStep(1); };
-  document.getElementById('sampleBtn').onclick = () => { exampleState(); selectedId = null; shownBars = {}; goStep(3); };
   document.getElementById('manualBtn').onclick = () => {
-    if (state.example) blankState();
     const r = { id: newId('r'), name: (state.receipts.length + 1) + '차', total: null, items: [makeItem('', 0)] };
     state.receipts.push(r); state.current = state.receipts.length - 1; goStep(2);
   };
