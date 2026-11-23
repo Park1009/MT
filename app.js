@@ -263,6 +263,24 @@ async function makeOcrWorker() {
 
 // ---------------- 영수증 부분 맞추기 (자르기 화면) ----------------
 
+// [AI 생성] 큰 사진을 화면용 크기로 선명하게 줄이기
+// 한 번에 크게 줄이면 글씨가 깨져 보여서, 절반씩 여러 번 줄임
+function shrinkImage(src, W, H) {
+  let cur = src, cw = src.naturalWidth || src.width, ch = src.naturalHeight || src.height;
+  while (cw / 2 > W && ch / 2 > H) {
+    const c = document.createElement('canvas');
+    c.width = Math.round(cw / 2); c.height = Math.round(ch / 2);
+    const x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
+    x.drawImage(cur, 0, 0, c.width, c.height);
+    cur = c; cw = c.width; ch = c.height;
+  }
+  const out = document.createElement('canvas');
+  out.width = W; out.height = H;
+  const x = out.getContext('2d'); x.imageSmoothingQuality = 'high';
+  x.drawImage(cur, 0, 0, W, H);
+  return out;
+}
+
 // [AI 생성] 사진 위에서 읽을 부분을 네 귀퉁이로 고르기.
 // 네 점을 메뉴 부분의 네 귀퉁이에 맞추면, 비스듬히 찍힌 영수증도 반듯하게 펴서 그 안만 읽음.
 // 고르면 { src, quad: [왼위, 오위, 오아래, 왼아래] }, 취소하면 null
@@ -274,13 +292,19 @@ function askCrop(img, index, count) {
     document.getElementById('cropCount').textContent = count > 1 ? `${index + 1} / ${count}장` : '';
     panel.hidden = false;
     let src = img, q, k = 1, drag = null;
+    // 레티나·휴대폰 화면은 화면 1칸에 픽셀이 2~3개라서, 캔버스도 그만큼 촘촘하게 그려야 흐리지 않음
+    let dpr = 1, cssW = 0, cssH = 0, view = null;
     const SW = () => src.naturalWidth || src.width, SH = () => src.naturalHeight || src.height;
     const rectQuad = b => [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]];
     const fit = () => {
       const maxW = Math.min(panel.clientWidth - 30 || 560, 620);
       const maxH = Math.max(360, window.innerHeight * 0.72);
       k = Math.min(maxW / SW(), maxH / SH());
-      cv.width = Math.round(SW() * k); cv.height = Math.round(SH() * k);
+      dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+      cssW = Math.round(SW() * k); cssH = Math.round(SH() * k);
+      cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+      cv.style.width = cssW + 'px'; cv.style.height = 'auto';   // 좁은 화면에서 줄어들 때 비율 유지
+      view = shrinkImage(src, cv.width, cv.height);   // 큰 사진을 미리 한 번 줄여 둠 (선명하고, 끌 때도 빠름)
     };
     // 처음 네모: 자동으로 찾은 영수증 영역. 사진 전체에 가까우면 귀퉁이를 잡기 쉽게 조금 안쪽으로
     const reset = () => {
@@ -291,17 +315,18 @@ function askCrop(img, index, count) {
     };
     const path = () => { ctx.beginPath(); q.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k))); ctx.closePath(); };
     function paint() {
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      ctx.drawImage(src, 0, 0, cv.width, cv.height);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);        // 그리는 좌표는 화면 크기 그대로, 실제 픽셀은 dpr배
+      ctx.clearRect(0, 0, cssW, cssH);
+      ctx.drawImage(view, 0, 0, cssW, cssH);
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(0, 0, cv.width, cv.height);
-      ctx.save(); path(); ctx.clip(); ctx.drawImage(src, 0, 0, cv.width, cv.height); ctx.restore();
+      ctx.fillRect(0, 0, cssW, cssH);
+      ctx.save(); path(); ctx.clip(); ctx.drawImage(view, 0, 0, cssW, cssH); ctx.restore();
       ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0d7f62';
       ctx.lineWidth = 2.5; path(); ctx.stroke();
       ctx.fillStyle = '#ffffff';
       q.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x * k, y * k, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
     }
-    const pos = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * (cv.width / r.width) / k, (e.clientY - r.top) * (cv.height / r.height) / k]; };
+    const pos = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * (cssW / r.width) / k, (e.clientY - r.top) * (cssH / r.height) / k]; };
     const clampX = x => Math.max(0, Math.min(SW(), x)), clampY = y => Math.max(0, Math.min(SH(), y));
     // 점과 선분 사이 거리 (테두리를 잡았는지 확인용)
     const segDist = (p, a, b) => {
