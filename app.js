@@ -325,6 +325,21 @@ function askCrop(img, index, count) {
       ctx.lineWidth = 2.5; path(); ctx.stroke();
       ctx.fillStyle = '#ffffff';
       q.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x * k, y * k, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+      if (drag && drag.corner !== undefined) loupe(q[drag.corner]);
+    }
+    // [AI 생성] 귀퉁이를 끄는 동안 손가락 위쪽에 그 부분을 4배로 크게 보여 줌 (화면에 맞춰 줄인 사진은 글자가 너무 작아서)
+    function loupe([x, y]) {
+      const R = 60, s = 2 * R / (k * 4);
+      const cx = Math.max(R, Math.min(cssW - R, x * k));
+      const cy = y * k - R - 40 < R ? y * k + R + 40 : y * k - R - 40;   // 위쪽에 자리가 없으면 아래에
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+      ctx.fillStyle = '#000'; ctx.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+      ctx.drawImage(src, x - s / 2, y - s / 2, s, s, cx - R, cy - R, 2 * R, 2 * R);   // 원본 사진에서 잘라 그려서 선명함
+      ctx.strokeStyle = '#ff3b30'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy); ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10); ctx.stroke();
+      ctx.restore();
+      ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
     }
     const pos = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * (cssW / r.width) / k, (e.clientY - r.top) * (cssH / r.height) / k]; };
     const clampX = x => Math.max(0, Math.min(SW(), x)), clampY = y => Math.max(0, Math.min(SH(), y));
@@ -342,6 +357,7 @@ function askCrop(img, index, count) {
       else if (edge !== undefined) drag = { edge, last: p };
       else drag = { draw: true, x0: clampX(p[0]), y0: clampY(p[1]) };   // 그 밖은 끌어서 네모를 새로 그림
       cv.setPointerCapture(e.pointerId);
+      paint();
     };
     cv.onpointermove = e => {
       if (!drag) return;
@@ -358,7 +374,7 @@ function askCrop(img, index, count) {
       }
       paint();
     };
-    cv.onpointerup = cv.onpointercancel = () => { drag = null; };
+    cv.onpointerup = cv.onpointercancel = () => { drag = null; paint(); };
     const done = val => {
       panel.hidden = true;
       ['cropOk', 'cropCancel', 'rotL', 'rotR', 'cropReset'].forEach(id => { document.getElementById(id).onclick = null; });
