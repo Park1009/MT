@@ -453,13 +453,15 @@ function deskewColor(c) {
   return r;
 }
 
-// [AI 생성] PaddleOCR이 찾은 글자 덩어리들을 같은 줄끼리 묶어서 줄글로 만들기
+// [AI 생성] PaddleOCR이 찾은 글자 덩어리들을 같은 줄끼리 묶기
 // 높이 가운데가 글자 높이의 절반 안쪽으로 가깝고, 가로로 겹치지 않으면 같은 줄로 봄
-function rowsFromBoxes(results) {
+// 줄마다 글, 위·아래 위치, 확신 점수(그 줄에서 가장 낮은 값)를 돌려줌
+function paddleRows(results) {
   const it = results.filter(r => r.text && r.text.trim()).map(r => ({
-    t: r.text.trim(), x: r.box.x, w: r.box.width, cy: r.box.y + r.box.height / 2, h: r.box.height
+    t: r.text.trim(), x: r.box.x, w: r.box.width, y: r.box.y, cy: r.box.y + r.box.height / 2, h: r.box.height,
+    c: typeof r.confidence === 'number' ? r.confidence : 1
   }));
-  if (!it.length) return '';
+  if (!it.length) return [];
   const hs = it.map(a => a.h).sort((a, b) => a - b), mh = hs[hs.length >> 1];
   it.sort((a, b) => a.cy - b.cy);
   const rows = [];
@@ -473,20 +475,88 @@ function rowsFromBoxes(results) {
     else rows.push({ cy: a.cy, items: [a] });
   }
   rows.sort((a, b) => a.cy - b.cy);
-  return rows.map(r => r.items.sort((a, b) => a.x - b.x).map(a => a.t).join(' ')).join('\n');
+  return rows.map(r => {
+    r.items.sort((a, b) => a.x - b.x);
+    return { text: r.items.map(a => a.t).join(' '), top: Math.min(...r.items.map(a => a.y)),
+      bottom: Math.max(...r.items.map(a => a.y + a.h)), conf: Math.min(...r.items.map(a => a.c)) };
+  });
+}
+function rowsFromBoxes(results) { return paddleRows(results).map(r => r.text).join('\n'); }
+
+// [AI 생성] 1차로 읽은 줄들에서 메뉴 부분(머리줄 '상품명·메뉴' ~ '합계' 줄)의 위·아래 위치 찾기
+// 영수증 전체를 한 번에 읽으면 긴 영수증은 글씨가 작아지므로, 이 부분만 잘라 크게 다시 읽음
+function menuRegion(rows, H) {
+  if (!rows.length) return null;
+  const mh = rows.map(r => r.bottom - r.top).sort((a, b) => a - b)[rows.length >> 1];
+  const hi = rows.findIndex(r => /(상\s*품|품\s*명|메\s*뉴|품\s*목|menu)/i.test(r.text));
+  let ti = -1;
+  for (let i = Math.max(0, hi + 1); i < rows.length; i++) if (TOTAL.test(rows[i].text)) { ti = i; break; }
+  if (hi < 0 && ti < 0) return null;
+  const y0 = hi >= 0 ? Math.max(0, rows[hi].top - mh * 1.5) : 0;
+  const y1 = ti >= 0 ? Math.min(H, rows[ti].bottom + mh * 1.5) : H;
+  if (y1 - y0 > H * 0.8 || y1 - y0 < mh * 3) return null;      // 거의 전체거나 너무 좁으면 다시 읽을 필요 없음
+  return { y0: Math.round(y0), y1: Math.round(y1) };
+}
+
+// [AI 생성] 확신이 낮은 메뉴 표시 (2단계에서 노란색으로 보여 줌)
+// PaddleOCR은 0.85 미만 (실제 영수증 21장: 틀린 메뉴 13개 중 9개를 짚고, 맞은 37개 중 4개만 괜히 짚음)
+// Tesseract는 0.7 미만 (시험 영수증: 틀린 22개 중 11개를 짚고, 맞은 110개 중 5개만 괜히 짚음)
+const CHECK_BELOW = 0.85, TESS_CHECK_BELOW = 0.7;
+function markChecks(parsed, rows, below = CHECK_BELOW) {
+  parsed.items.forEach(it => {
+    const c = [it.line, it.nameLine].filter(i => i != null && rows[i]).map(i => rows[i].conf);
+    it.check = (c.length && Math.min(...c) < below) || !/[가-힣]{2,}|[A-Za-z]{3,}/.test(it.name);
+  });
+  return parsed;
+}
+
+// [AI 생성] PaddleOCR로 한 번 읽기
+async function readPaddle(pocr, canvas) {
+  const out = await pocr.recognize(canvas, { flatten: true });
+  const rows = paddleRows(out.results || []);
+  const text = rows.map(r => r.text).join('\n');
+  const parsed = markChecks(parseReceipt(text), rows);
+  return { parsed, score: parseScore(parsed), text, psm: 'paddle', rows };
+}
+
+// [AI 생성] 두 결과 중 나은 쪽: 메뉴 합과 합계가 맞는 쪽 먼저, 둘 다 같으면 점수가 높은 쪽 (같으면 b)
+function betterResult(a, b) {
+  if (!a) return b; if (!b) return a;
+  const ca = isConfident(a.parsed), cb = isConfident(b.parsed);
+  if (ca !== cb) return cb ? b : a;
+  return b.score >= a.score ? b : a;
 }
 
 // [AI 생성] PaddleOCR로 읽기 (flat: 고른 부분을 반듯하게 편 원래 색 사진)
+// 1) 전체를 읽고 → 미심쩍으면 2) 메뉴 부분만 잘라 크게 다시 읽어서 나은 쪽
 async function recognizePaddle(pocr, flat) {
-  const out = await pocr.recognize(deskewColor(flat), { flatten: true });
-  const text = rowsFromBoxes(out.results || []);
-  const parsed = parseReceipt(text);
-  return { parsed, score: parseScore(parsed), text, psm: 'paddle' };
+  const ds = deskewColor(flat);
+  const first = await readPaddle(pocr, ds);
+  if (isConfident(first.parsed)) return first;
+  const reg = menuRegion(first.rows, ds.height);
+  if (!reg) return first;
+  const crop = document.createElement('canvas');
+  crop.width = ds.width; crop.height = reg.y1 - reg.y0;
+  crop.getContext('2d').drawImage(ds, 0, -reg.y0);
+  const second = await readPaddle(pocr, crop);
+  return betterResult(first, second);
 }
 
 // [AI 생성] 여러 방식으로 읽어 보고 가장 그럴듯한 결과 고르기
 // 1) 기본 크기·줄 단위(PSM 6) → 2) 크게 키워서 다시 → 3) 단 나눔 방식(PSM 4)
 // 메뉴 합계가 영수증 합계와 맞고 이름도 멀쩡하면 거기서 멈춤
+// [AI 생성] Tesseract가 읽은 글의 줄마다 확신 점수(0~1)를 붙임 (빈 줄은 0점 없이 그대로)
+function tessRows(data) {
+  const lines = (data.lines || []).map(l => ({ t: l.text.replace(/\s+/g, ' ').trim(), c: (l.confidence || 0) / 100 }));
+  let k = 0;
+  return data.text.split('\n').map(t => {
+    const key = t.replace(/\s+/g, ' ').trim();
+    if (!key) return { text: t, conf: 1 };
+    for (let j = k; j < lines.length; j++) if (lines[j].t === key) { k = j + 1; return { text: t, conf: lines[j].c }; }
+    return { text: t, conf: 1 };
+  });
+}
+
 async function recognizeBest(worker, canvas, onStep) {
   const tries = [
     { make: () => canvas, psm: '6' },
@@ -502,7 +572,7 @@ async function recognizeBest(worker, canvas, onStep) {
     if (!img) continue;                               // 펼 것이 없으면 건너뜀
     await worker.setParameters({ tessedit_pageseg_mode: tries[i].psm, preserve_interword_spaces: '1', user_defined_dpi: '300' });
     const out = await worker.recognize(img);
-    const parsed = parseReceipt(out.data.text);
+    const parsed = markChecks(parseReceipt(out.data.text), tessRows(out.data), TESS_CHECK_BELOW);
     const score = parseScore(parsed);
     if (!best || score > best.score) best = { parsed, score, text: out.data.text, psm: tries[i].psm + '#' + i };
     if (isConfident(parsed)) break;

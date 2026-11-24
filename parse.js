@@ -54,7 +54,7 @@ const cleanName = s => {
 
 function parseReceipt(raw) {
   const items = [];
-  let total = null, payTotal = null, pendingName = null, orphan = null, seenTotal = false, subTotal = null, bare = null;
+  let total = null, payTotal = null, pendingName = null, orphan = null, seenTotal = false, subTotal = null, bare = null, lastSmall = null, pendingIdx = -1;
   const discounts = new Set();
 
   const lines = String(raw)
@@ -62,7 +62,8 @@ function parseReceipt(raw) {
     .replace(/[，]/g, ',')
     .split(/\r?\n/);
 
-  for (let line of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    let line = lines[li];
     // 줄 앞뒤의 잡문자(|, §, ] 등) 지우기
     line = line.replace(/^[\s|§¦!ㅣ\[\]{}<>«»"'`~_=+\\/#$%^&:;,.-]+/, '')
                .replace(/[\s|§¦!ㅣ\[\]{}<>«»"'`~_=+\\/#$%^&:;,-]+$/, '')
@@ -85,7 +86,8 @@ function parseReceipt(raw) {
     for (let i = 0; i < tokens.length - 1; i++) {
       // 왼쪽이 한 자리 수면 수량일 수 있어서('공기밥 1,000 2 200') 쉼표가 있을 때만 이음
       if (/^\d{1,3}[,.]?$/.test(tokens[i]) && /^\d{3}$/.test(tokens[i + 1]) &&
-          (/[,.]$/.test(tokens[i]) || (i + 1 === tokens.length - 1 && /^\d{2,3}$/.test(tokens[i])))) {
+          (/[,.]$/.test(tokens[i]) || (i + 1 === tokens.length - 1 && /^\d{2,3}$/.test(tokens[i]) &&
+            tokens[i] !== tokens[i + 1] && /00$/.test(tokens[i + 1])))) {
         tokens.splice(i, 2, tokens[i].replace(/[,.]$/, '') + ',' + tokens[i + 1]);
       }
     }
@@ -93,8 +95,9 @@ function parseReceipt(raw) {
     const nums = text.match(/\d{1,3}(?:[,.]\d{3})+|\d{3,7}/g);
 
     // 할인 줄(-780 등): 금액만 기억해 두고 나중에 합계와 맞춰 '할인' 줄로 넣음
-    if (/할\s*인/.test(text) && /-\s*\d/.test(text)) {
-      if (nums) discounts.add(toNum(nums[nums.length - 1]));
+    const neg = text.match(/(?:^|\s)-\s*(\d{1,3}(?:[,.]\d{3})+|\d{3,7})(?!\d)/);
+    if (neg) {
+      discounts.add(toNum(neg[1]));
       pendingName = null;
       continue;
     }
@@ -124,16 +127,19 @@ function parseReceipt(raw) {
     const hasComma = tail.some(t => /\d,\d{3}/.test(t));
     for (let i = tail.length - 1; i >= 0; i--) if (/^\d{8,}$/.test(tail[i]) || (hasComma && /^\d{7,}$/.test(tail[i]))) tail.splice(i, 1);
     let name = cleanName(tokens.join(' '));
+    const prevSmall = lastSmall;
+    lastSmall = null;
     if (!tail.length) {
       // 숫자가 없는 줄: 바로 앞 줄에 이름 없는 가격만 있었으면 그 이름으로 씀
       if (orphan && /[가-힣]{2,}/.test(name) && !seenTotal) {
         name = fixMenuName(name);
-        items.push({ name: orphan.qty > 1 ? `${name} ×${orphan.qty}` : name, price: orphan.amount, drink: DRINK.test(name) });
+        items.push({ name: orphan.qty > 1 ? `${name} ×${orphan.qty}` : name, price: orphan.amount, drink: DRINK.test(name), line: orphan.line, nameLine: li });
         orphan = null; pendingName = null;
         continue;
       }
       // 아니면 다음 줄에 가격만 있을 수 있어서 이름을 기억해 둠
       pendingName = /[가-힣]{2,}/.test(name) ? name : null;
+      pendingIdx = li;
       continue;
     }
     orphan = null;
@@ -141,7 +147,9 @@ function parseReceipt(raw) {
     const noName = !/[가-힣A-Za-z]/.test(name);
     // 이름 자리에 상품 코드('DY1025001')만 있으면 바로 앞 줄의 한글 이름을 씀
     const codeOnly = !/[가-힣]/.test(name) && /^[A-Za-z]{0,4}[\d)]{5,}[A-Za-z\d)]*$/.test(name.replace(/\s/g, ''));
-    if (pendingName && (noName || codeOnly || (!/[가-힣]/.test(name) && name.replace(/\s/g, '').length <= 3))) name = pendingName;
+    let nameLine = li;
+    if (pendingName && (noName || codeOnly || (!/[가-힣]/.test(name) && name.replace(/\s/g, '').length <= 3))) { name = pendingName; nameLine = pendingIdx; }
+    else if (pendingName && /^\d{5,}$/.test(tokens[0] || '') && /[가-힣]/.test(name)) { name = pendingName + ' ' + name; nameLine = pendingIdx; }
     const prevName = pendingName;
     pendingName = null;
     let amount = toNum(tail[tail.length - 1]);
@@ -161,17 +169,26 @@ function parseReceipt(raw) {
     }
     // 금액이 이상한 줄: 이름만 맞으면 다음 줄 가격의 이름일 수 있어서 기억해 둠 ('고추장떡볶이 00')
     if (!(amount >= 100 && amount <= 5000000) || amount % 10 !== 0) {
-      pendingName = /[가-힣]{2,}/.test(name) ? name : prevName;
+      if (/[가-힣]{2,}/.test(name)) { pendingName = name; pendingIdx = li; } else pendingName = prevName;
       continue;
     }
-    if (!/[가-힣A-Za-z]/.test(name)) { if (!seenTotal) orphan = { amount, qty }; bare = { amount, at: items.length }; continue; }
+    if ((noName || codeOnly) && !prevName && prevSmall && items[items.length - 1] === prevSmall.item && amount >= 1000) {
+      items.pop();
+      name = prevSmall.base;
+      nameLine = prevSmall.item.line;
+    }
+    if (!/[가-힣A-Za-z]/.test(name)) { if (!seenTotal) orphan = { amount, qty, line: li }; bare = { amount, at: items.length }; continue; }
     // 합계 줄을 지난 뒤의 금액 줄은 결제·포인트 정보라 메뉴로 넣지 않음
     if (seenTotal && items.length) continue;
     if (name.length > 24) name = name.slice(0, 24);
+    if (/^[겨계]$/.test(name.replace(/[\s\-]/g, ''))) { total = total || amount; seenTotal = true; continue; }
     // 합계 줄이 '가 계'처럼 깨져 읽힌 경우 (두세 글자이고 '계'로 끝남)
     if (/^[가-힣\s,.]{1,4}[계겨게]$/.test(name.replace(/\s/g, '')) && name.replace(/\s/g, '').length <= 3) { total = total || amount; seenTotal = true; continue; }
+    const baseName = name;
     name = fixMenuName(name);
-    items.push({ name: qty > 1 ? `${name} ×${qty}` : name, price: amount, drink: DRINK.test(name) });
+    const item = { name: qty > 1 ? `${name} ×${qty}` : name, price: amount, drink: DRINK.test(name), line: li, nameLine };
+    items.push(item);
+    if (tail.length === 1 && /^\d{3}$/.test(tail[0]) && /[가-힣]/.test(baseName)) lastSmall = { item, base: baseName + ' ' + tail[0] };
   }
   // '합계' 글자를 못 읽고 금액만 남은 줄이 앞 메뉴들의 합과 같으면 그게 합계
   if (total == null && payTotal == null && subTotal == null && bare && bare.at >= 2 &&

@@ -32,8 +32,10 @@ function restore() {
 }
 
 // [AI 생성] 메뉴 하나
-function makeItem(name, price, drink) {
-  return { id: newId('i'), name: name, price: price, drink: !!drink, mode: 'none', people: [] };
+function makeItem(name, price, drink, check) {
+  const it = { id: newId('i'), name: name, price: price, drink: !!drink, mode: 'none', people: [] };
+  if (check) it.check = true;          // 글자 인식이 확실하지 않음 → 2단계에서 노란색
+  return it;
 }
 
 // [AI 생성] 사람 한 명 (색은 팔레트에서 차례로)
@@ -255,7 +257,8 @@ async function makePaddle() {
   if (!self.crossOriginIsolated) ort.env.wasm.numThreads = 1;   // GitHub Pages는 여러 스레드를 못 씀
   const P = await import(PPU);
   const base = new URL('./paddle/', location.href).href;
-  const svc = new P.PaddleOcrService({ model: {
+  // 글자 위치를 찾을 때 사진을 최대 1280px로 보고 찾음 (기본 640px는 긴 영수증 글씨가 너무 작아짐)
+  const svc = new P.PaddleOcrService({ detection: { maxSideLength: 1280 }, model: {
     detection: base + 'PP-OCRv5_mobile_det_infer.onnx',
     recognition: base + 'korean_PP-OCRv5_mobile_rec_infer.onnx',
     charactersDictionary: base + 'ppocrv5_korean_dict.txt'
@@ -519,10 +522,12 @@ async function handleReceiptFile(file, index, count) {
       const tb = await recognizeBest(worker, canvas, (i, n) => {
         ocrReadLabel = i === 0 ? '한 번 더 확인하며 읽는 중' : `더 정확하게 다시 읽는 중 (${i + 1}/${n})`;
       });
-      if (!best || tb.score > best.score) best = tb;
+      // 메뉴 합과 합계가 맞는 쪽을 먼저, 둘 다 같으면 점수가 높은 쪽
+      const ok1 = best && isConfident(best.parsed), ok2 = isConfident(tb.parsed);
+      if (!best || (ok2 && !ok1) || (ok2 === ok1 && tb.score > best.score)) best = tb;
     }
     r.engine = best.psm === 'paddle' ? 'PaddleOCR' : 'Tesseract';
-    r.items = best.parsed.items.map(x => makeItem(x.name, x.price, x.drink));
+    r.items = best.parsed.items.map(x => makeItem(x.name, x.price, x.drink, x.check));
     r.total = best.parsed.total;
     r.rawText = best.text.trim();
     ocrProgress('다 읽었어요', 1);
@@ -574,6 +579,7 @@ function renderStep2() {
   const list = document.getElementById('itemList');
   list.innerHTML = '<div class="item head"><span>메뉴</span><span style="text-align:right">가격(원)</span><span></span><span></span></div>';
   r.items.forEach(it => list.append(itemRow(r, it)));
+  renderCheckNote(r);
   renderSum();
 
   const note = document.getElementById('readNote');
@@ -606,12 +612,12 @@ function itemRow(r, it) {
   row.className = 'item';
   const name = document.createElement('input');
   name.type = 'text'; name.value = it.name; name.placeholder = '메뉴 이름'; name.setAttribute('aria-label', '메뉴 이름');
-  name.oninput = () => { it.name = name.value; persist(); };
+  name.oninput = () => { it.name = name.value; clearCheck(); persist(); };
   const price = document.createElement('input');
   price.type = 'text'; price.inputMode = 'numeric'; price.className = 'price';
   price.value = it.price ? Number(it.price).toLocaleString('ko-KR') : '';
   price.placeholder = '0'; price.setAttribute('aria-label', '가격');
-  price.oninput = () => { it.price = (/^\s*-/.test(price.value) ? -1 : 1) * (parseInt(price.value.replace(/[^\d]/g, ''), 10) || 0); renderSum(); persist(); };  // 할인 줄은 '-780'처럼 음수
+  price.oninput = () => { it.price = (/^\s*-/.test(price.value) ? -1 : 1) * (parseInt(price.value.replace(/[^\d]/g, ''), 10) || 0); clearCheck(); renderSum(); persist(); };  // 할인 줄은 '-780'처럼 음수
   price.onblur = () => { price.value = it.price ? it.price.toLocaleString('ko-KR') : ''; };
   const drink = document.createElement('button');
   drink.type = 'button'; drink.className = 'toggle'; drink.textContent = '술·음료';
@@ -620,9 +626,24 @@ function itemRow(r, it) {
   const del = document.createElement('button');
   del.type = 'button'; del.className = 'quiet'; del.textContent = '삭제';
   del.setAttribute('aria-label', '메뉴 삭제');
-  del.onclick = () => { r.items = r.items.filter(x => x !== it); row.remove(); renderSum(); persist(); };
+  del.onclick = () => { r.items = r.items.filter(x => x !== it); row.remove(); renderSum(); renderCheckNote(r); persist(); };
+  // 확신 없는 메뉴는 노란색. 고치면(또는 맞다고 확인하면) 표시가 사라짐
+  const clearCheck = () => { if (!it.check) return; delete it.check; name.classList.remove('check'); price.classList.remove('check'); renderCheckNote(r); };
+  if (it.check) {
+    name.classList.add('check'); price.classList.add('check');
+    name.title = price.title = '글자 인식이 확실하지 않아요. 사진과 비교해 확인해 주세요.';
+  }
   row.append(name, price, drink, del);
   return row;
+}
+
+// [AI 생성] 노란 칸 안내 (확인할 메뉴가 있을 때만)
+function renderCheckNote(r) {
+  const el = document.getElementById('checkNote');
+  if (!el) return;
+  const n = r ? r.items.filter(it => it.check).length : 0;
+  el.hidden = !n;
+  el.textContent = n ? `노란 칸 ${n}개는 글자 인식이 확실하지 않은 곳이에요. 오른쪽 사진과 비교해 확인하고, 고치면 노란색이 사라져요.` : '';
 }
 
 // [AI 생성] 메뉴 합계와 영수증 합계 비교

@@ -33,6 +33,8 @@
   --accent-soft: #d8efe7;
   --warn: #b5420f;
   --warn-soft: #fbe6dc;
+  --check-bg: #fff4c2;
+  --check-line: #e0b400;
   --font-display: "Do Hyeon", "IBM Plex Sans KR", system-ui, sans-serif;
   --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --font-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -43,6 +45,7 @@
     --paper: #f7f2e4; --paper-ink: #26241f; --paper-line: #c9c2b0;
     --accent: #3cc79c; --accent-ink: #0c1a15; --accent-soft: #173a30;
     --warn: #f08a5d; --warn-soft: #3b2219;
+    --check-bg: #3d3412; --check-line: #b8930a;
     color-scheme: dark;
   }
 }
@@ -51,6 +54,7 @@
   --paper: #f7f2e4; --paper-ink: #26241f; --paper-line: #c9c2b0;
   --accent: #3cc79c; --accent-ink: #0c1a15; --accent-soft: #173a30;
   --warn: #f08a5d; --warn-soft: #3b2219;
+  --check-bg: #3d3412; --check-line: #b8930a;
   color-scheme: dark;
 }
 *, *::before, *::after { box-sizing: border-box; }
@@ -138,6 +142,9 @@ input[type="text"], input[type="number"], input[inputmode], select {
   border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; min-height: 38px; min-width: 0; width: 100%;
 }
 input.price { font-family: var(--font-num); text-align: right; }
+/* 글자 인식이 확실하지 않은 칸 */
+input.check { background: var(--check-bg); border-color: var(--check-line); }
+.check-note { margin: 0; font-size: 13px; padding: 8px 12px; border-radius: 10px; background: var(--check-bg); border: 1px solid var(--check-line); color: var(--ink); }
 button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); font-weight: 600; }
 .sum { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-size: 14px; }
 .sum b { font-family: var(--font-num); font-weight: 600; }
@@ -253,6 +260,7 @@ textarea {
           <input id="receiptName" type="text" maxlength="20" style="max-width:240px">
         </label>
         <p id="readNote" class="warn" hidden></p>
+        <p id="checkNote" class="check-note" hidden></p>
         <div id="itemList" class="items"></div>
         <div class="row">
           <button id="addItem" type="button">메뉴 추가</button>
