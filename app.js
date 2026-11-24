@@ -227,6 +227,7 @@ function renderStep1() {
 let ocrWorkerP = null;
 let ocrReadLabel = '영수증 글자 읽는 중';
 let ocrBusy = false;
+let paddleP = null;
 
 // [AI 생성] 글자 인식 진행 상황 표시
 function ocrProgress(label, p) {
@@ -234,6 +235,34 @@ function ocrProgress(label, p) {
   document.getElementById('ocrLabel').textContent = label;
   document.getElementById('ocrPct').textContent = Math.round(p * 100) + '%';
   document.getElementById('ocrBar').style.width = Math.round(p * 100) + '%';
+}
+
+// [AI 생성] PaddleOCR(정밀 인식) 준비 (한 번만 만듦). 못 쓰면 null → Tesseract만 씀
+// 라이브러리: ppu-paddle-ocr (MIT), onnxruntime-web (MIT), 모델: PaddleOCR PP-OCRv5 한국어 (Apache-2.0)
+// 모델 파일은 이 저장소의 paddle/ 폴더에 있음
+function getPaddle() {
+  if (!paddleP) paddleP = makePaddle().catch(e => { console.warn('PaddleOCR 준비 실패, Tesseract만 써요:', e); return null; });
+  return paddleP;
+}
+async function makePaddle() {
+  const CDN = 'https://cdn.jsdelivr.net';
+  const PPU = CDN + '/npm/ppu-paddle-ocr@6.0.0/web/+esm';
+  // ppu-paddle-ocr가 쓰는 onnxruntime-web과 같은 모듈을 먼저 불러와서 설정 (wasm 파일 위치, 스레드 수)
+  let ver = '1.27.0';
+  try { const m = (await (await fetch(PPU)).text()).match(/\/npm\/onnxruntime-web@([^/"']+)\/\+esm/); if (m) ver = m[1]; } catch (e) { /* 기본 버전 */ }
+  const ort = await import(`${CDN}/npm/onnxruntime-web@${ver}/+esm`);
+  ort.env.wasm.wasmPaths = `${CDN}/npm/onnxruntime-web@${ver}/dist/`;
+  if (!self.crossOriginIsolated) ort.env.wasm.numThreads = 1;   // GitHub Pages는 여러 스레드를 못 씀
+  const P = await import(PPU);
+  const base = new URL('./paddle/', location.href).href;
+  const svc = new P.PaddleOcrService({ model: {
+    detection: base + 'PP-OCRv5_mobile_det_infer.onnx',
+    recognition: base + 'korean_PP-OCRv5_mobile_rec_infer.onnx',
+    charactersDictionary: base + 'ppocrv5_korean_dict.txt'
+  } });
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('PaddleOCR이 제때 준비되지 않았어요.')), 120000));
+  await Promise.race([svc.initialize(), timeout]);
+  return svc;
 }
 
 // [AI 생성] 글자 인식 엔진 준비 (한 번만 만듦). 페이지 옆에 ocr/ 폴더가 있으면 그 파일을, 없으면 CDN을 씀
@@ -462,7 +491,8 @@ async function handleReceiptFile(file, index, count) {
   let img;
   try { img = (await loadImageFile(file)).img; }
   catch (e) { err.textContent = e.message; err.hidden = false; return null; }
-  getOcrWorker().catch(() => {});                 // 사진을 맞추는 동안 인식 엔진을 미리 준비
+  // 사진을 맞추는 동안 인식 엔진을 미리 준비 (정밀 인식 먼저 받고, 그다음 Tesseract)
+  getPaddle().then(() => getOcrWorker()).catch(() => {});
   const crop = await askCrop(img, index, count);
   if (!crop) return null;
   const r = { id: newId('r'), name: (state.receipts.length + 1) + '차', total: null, items: [] };
@@ -472,13 +502,26 @@ async function handleReceiptFile(file, index, count) {
   try {
     ocrProgress('사진 다듬는 중', 0.02);
     await new Promise(ok => setTimeout(ok, 30));  // 진행 표시가 먼저 그려지도록
-    ocrProgress('글자 인식 준비 중', 0.05);
-    const worker = await getOcrWorker();
-    // 고른 부분만 다듬어서 읽기 (결과가 미심쩍으면 방식을 바꿔 다시 읽고 가장 그럴듯한 결과를 고름)
-    const canvas = prepareReceipt(flat, null);
-    const best = await recognizeBest(worker, canvas, (i, n) => {
-      ocrReadLabel = i === 0 ? '고른 부분 글자 읽는 중' : `더 정확하게 다시 읽는 중 (${i + 1}/${n})`;
-    });
+    // 1) PaddleOCR(정밀 인식)로 먼저 읽기
+    ocrProgress('정밀 인식 준비 중 (처음 한 번은 30MB쯤 받아요)', 0.05);
+    let best = null;
+    const pocr = await getPaddle();
+    if (pocr) {
+      ocrProgress('정밀 인식으로 읽는 중', 0.4);
+      await new Promise(ok => setTimeout(ok, 30));
+      try { best = await recognizePaddle(pocr, flat); } catch (e) { console.warn('PaddleOCR 읽기 실패:', e); }
+    }
+    // 2) 메뉴 합과 합계가 안 맞는 등 미심쩍으면 Tesseract로도 읽어서 더 그럴듯한 쪽을 고름
+    if (!best || !isConfident(best.parsed)) {
+      ocrProgress('글자 인식 준비 중', 0.5);
+      const worker = await getOcrWorker();
+      const canvas = prepareReceipt(flat, null);
+      const tb = await recognizeBest(worker, canvas, (i, n) => {
+        ocrReadLabel = i === 0 ? '한 번 더 확인하며 읽는 중' : `더 정확하게 다시 읽는 중 (${i + 1}/${n})`;
+      });
+      if (!best || tb.score > best.score) best = tb;
+    }
+    r.engine = best.psm === 'paddle' ? 'PaddleOCR' : 'Tesseract';
     r.items = best.parsed.items.map(x => makeItem(x.name, x.price, x.drink));
     r.total = best.parsed.total;
     r.rawText = best.text.trim();
@@ -538,6 +581,7 @@ function renderStep2() {
   note.hidden = !r.note;
   const raw = document.getElementById('rawBox');
   raw.hidden = !r.rawText;
+  raw.querySelector('summary').textContent = '읽은 글 보기' + (r.engine ? ` · ${r.engine}로 읽음` : '');
   if (r.rawText) {
     const ta = document.getElementById('rawText');
     ta.value = r.rawText;

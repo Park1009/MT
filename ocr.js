@@ -425,6 +425,65 @@ function dewarpLines(src) {
   return out;
 }
 
+// [AI 생성] 읽은 결과를 믿을 만한지: 메뉴 금액 합이 영수증 합계와 딱 맞고, 메뉴 이름도 멀쩡함
+function isConfident(parsed) {
+  const sum = parsed.items.reduce((s, x) => s + x.price, 0);
+  const clean = parsed.items.every(x => /[가-힣]{2,}|[A-Za-z]{3,}/.test(x.name));
+  return !!(parsed.total && sum === parsed.total && parsed.items.length >= 1 && clean);
+}
+
+// ---------------- PaddleOCR (먼저 읽는 정밀 인식) ----------------
+
+// [AI 생성] 원래 색 사진의 기울기만 바로잡기
+// PaddleOCR은 글자 덩어리를 찾아서 읽는 방식이라, 영수증이 기울면 메뉴와 가격이 다른 줄로 엇갈림
+function deskewColor(c) {
+  const small = scaleCanvas(c, Math.min(c.width, 900));
+  const pc = prepareReceipt(small, null, { scale: 1, deskew: false });
+  const sm = grayOf(pc, 700);
+  const ang = estimateSkew(sm.g, sm.w, sm.h);
+  if (Math.abs(ang) < 0.25) return c;
+  const rad = (-ang * Math.PI) / 180, W = c.width, H = c.height;
+  const rw = Math.round(Math.abs(W * Math.cos(rad)) + Math.abs(H * Math.sin(rad)));
+  const rh = Math.round(Math.abs(W * Math.sin(rad)) + Math.abs(H * Math.cos(rad)));
+  const r = document.createElement('canvas'); r.width = rw; r.height = rh;
+  const x = r.getContext('2d');
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, rw, rh);
+  x.translate(rw / 2, rh / 2); x.rotate(rad); x.translate(-W / 2, -H / 2);
+  x.drawImage(c, 0, 0);
+  return r;
+}
+
+// [AI 생성] PaddleOCR이 찾은 글자 덩어리들을 같은 줄끼리 묶어서 줄글로 만들기
+// 높이 가운데가 글자 높이의 절반 안쪽으로 가깝고, 가로로 겹치지 않으면 같은 줄로 봄
+function rowsFromBoxes(results) {
+  const it = results.filter(r => r.text && r.text.trim()).map(r => ({
+    t: r.text.trim(), x: r.box.x, w: r.box.width, cy: r.box.y + r.box.height / 2, h: r.box.height
+  }));
+  if (!it.length) return '';
+  const hs = it.map(a => a.h).sort((a, b) => a - b), mh = hs[hs.length >> 1];
+  it.sort((a, b) => a.cy - b.cy);
+  const rows = [];
+  for (const a of it) {
+    let best = null, bd = Infinity;
+    for (const r of rows) {
+      const d = Math.abs(a.cy - r.cy);
+      if (d < 0.5 * mh && d < bd && !r.items.some(b => a.x < b.x + b.w - 2 && b.x < a.x + a.w - 2)) { best = r; bd = d; }
+    }
+    if (best) { best.items.push(a); best.cy = best.items.reduce((s, b) => s + b.cy, 0) / best.items.length; }
+    else rows.push({ cy: a.cy, items: [a] });
+  }
+  rows.sort((a, b) => a.cy - b.cy);
+  return rows.map(r => r.items.sort((a, b) => a.x - b.x).map(a => a.t).join(' ')).join('\n');
+}
+
+// [AI 생성] PaddleOCR로 읽기 (flat: 고른 부분을 반듯하게 편 원래 색 사진)
+async function recognizePaddle(pocr, flat) {
+  const out = await pocr.recognize(deskewColor(flat), { flatten: true });
+  const text = rowsFromBoxes(out.results || []);
+  const parsed = parseReceipt(text);
+  return { parsed, score: parseScore(parsed), text, psm: 'paddle' };
+}
+
 // [AI 생성] 여러 방식으로 읽어 보고 가장 그럴듯한 결과 고르기
 // 1) 기본 크기·줄 단위(PSM 6) → 2) 크게 키워서 다시 → 3) 단 나눔 방식(PSM 4)
 // 메뉴 합계가 영수증 합계와 맞고 이름도 멀쩡하면 거기서 멈춤
@@ -446,9 +505,7 @@ async function recognizeBest(worker, canvas, onStep) {
     const parsed = parseReceipt(out.data.text);
     const score = parseScore(parsed);
     if (!best || score > best.score) best = { parsed, score, text: out.data.text, psm: tries[i].psm + '#' + i };
-    const sum = parsed.items.reduce((s, x) => s + x.price, 0);
-    const clean = parsed.items.every(x => /[가-힣]{2,}|[A-Za-z]{3,}/.test(x.name));
-    if (parsed.total && sum === parsed.total && parsed.items.length >= 1 && clean) break;
+    if (isConfident(parsed)) break;
   }
   return best;
 }

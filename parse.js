@@ -139,7 +139,9 @@ function parseReceipt(raw) {
     orphan = null;
     // 이름이 없거나 'SD'처럼 깨진 짧은 영문이면 바로 앞 줄의 한글 이름을 씀
     const noName = !/[가-힣A-Za-z]/.test(name);
-    if (pendingName && (noName || (!/[가-힣]/.test(name) && name.replace(/\s/g, '').length <= 3))) name = pendingName;
+    // 이름 자리에 상품 코드('DY1025001')만 있으면 바로 앞 줄의 한글 이름을 씀
+    const codeOnly = !/[가-힣]/.test(name) && /^[A-Za-z]{0,4}[\d)]{5,}[A-Za-z\d)]*$/.test(name.replace(/\s/g, ''));
+    if (pendingName && (noName || codeOnly || (!/[가-힣]/.test(name) && name.replace(/\s/g, '').length <= 3))) name = pendingName;
     const prevName = pendingName;
     pendingName = null;
     let amount = toNum(tail[tail.length - 1]);
