@@ -502,10 +502,22 @@ function menuRegion(rows, H) {
 // PaddleOCR은 0.85 미만 (실제 영수증 21장: 틀린 메뉴 13개 중 9개를 짚고, 맞은 37개 중 4개만 괜히 짚음)
 // Tesseract는 0.7 미만 (시험 영수증: 틀린 22개 중 11개를 짚고, 맞은 110개 중 5개만 괜히 짚음)
 const CHECK_BELOW = 0.85, TESS_CHECK_BELOW = 0.7;
-function markChecks(parsed, rows, below = CHECK_BELOW) {
+// 메뉴 이름 사전 고치기(된장피개 → 된장찌개)를 확신 점수에 맞춰 씀
+// - 확신이 낮은 줄: 두 글자 낱말까지 고침 (클라 → 콜라)
+// - 확신이 아주 높은 줄(keepAbove 이상, PaddleOCR만): 읽은 그대로 둠 (잘 읽은 '메이플 페스타'를 '파스타'로 바꾸던 문제)
+//   실제 영수증에서 맞게 고친 줄은 0.82·0.87, 잘못 고친 줄은 0.91이었음
+// - 그 사이: 전처럼 세 글자 이상 낱말만 고침
+function markChecks(parsed, rows, below = CHECK_BELOW, keepAbove = null) {
   parsed.items.forEach(it => {
-    const c = [it.line, it.nameLine].filter(i => i != null && rows[i]).map(i => rows[i].conf);
-    it.check = (c.length && Math.min(...c) < below) || !/[가-힣]{2,}|[A-Za-z]{3,}/.test(it.name);
+    const c = [it.line, it.nameLine].filter(i => i != null && rows[i] && rows[i].conf != null).map(i => rows[i].conf);
+    const minC = c.length ? Math.min(...c) : null;
+    const low = minC != null && minC < below;
+    if (it.raw != null && minC != null) {
+      const nm = low ? fixMenuName(it.raw, 2) : (keepAbove != null && minC >= keepAbove ? it.raw : fixMenuName(it.raw));
+      it.name = it.qty > 1 ? `${nm} ×${it.qty}` : nm;
+      it.drink = DRINK.test(nm);
+    }
+    it.check = low || !/[가-힣]{2,}|[A-Za-z]{3,}/.test(it.name);
   });
   return parsed;
 }
@@ -515,7 +527,7 @@ async function readPaddle(pocr, canvas) {
   const out = await pocr.recognize(canvas, { flatten: true });
   const rows = paddleRows(out.results || []);
   const text = rows.map(r => r.text).join('\n');
-  const parsed = markChecks(parseReceipt(text), rows);
+  const parsed = markChecks(parseReceipt(text), rows, CHECK_BELOW, 0.9);
   return { parsed, score: parseScore(parsed), text, psm: 'paddle', rows };
 }
 
@@ -545,15 +557,15 @@ async function recognizePaddle(pocr, flat) {
 // [AI 생성] 여러 방식으로 읽어 보고 가장 그럴듯한 결과 고르기
 // 1) 기본 크기·줄 단위(PSM 6) → 2) 크게 키워서 다시 → 3) 단 나눔 방식(PSM 4)
 // 메뉴 합계가 영수증 합계와 맞고 이름도 멀쩡하면 거기서 멈춤
-// [AI 생성] Tesseract가 읽은 글의 줄마다 확신 점수(0~1)를 붙임 (빈 줄은 0점 없이 그대로)
+// [AI 생성] Tesseract가 읽은 글의 줄마다 확신 점수(0~1)를 붙임 (빈 줄이나 짝을 못 찾은 줄은 null)
 function tessRows(data) {
   const lines = (data.lines || []).map(l => ({ t: l.text.replace(/\s+/g, ' ').trim(), c: (l.confidence || 0) / 100 }));
   let k = 0;
   return data.text.split('\n').map(t => {
     const key = t.replace(/\s+/g, ' ').trim();
-    if (!key) return { text: t, conf: 1 };
+    if (!key) return { text: t, conf: null };
     for (let j = k; j < lines.length; j++) if (lines[j].t === key) { k = j + 1; return { text: t, conf: lines[j].c }; }
-    return { text: t, conf: 1 };
+    return { text: t, conf: null };   // 점수를 못 찾은 줄은 판단하지 않음
   });
 }
 
